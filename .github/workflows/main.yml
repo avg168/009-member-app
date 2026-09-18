@@ -25,62 +25,108 @@ jobs:
         with:
           gradle-version: "9.6.1"
 
-      - name: Find Android project in all ZIP files
+      - name: Extract Android ZIP
         shell: bash
         run: |
-          echo "=== Repository ZIP files ==="
+          echo "Repository files:"
+          ls -lah
 
-          find . -maxdepth 1 -type f -iname "*.zip" -print
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*Android*iOS*V3*.zip" -print -quit)
 
-          mkdir -p extracted_all
-
-          FOUND=""
-
-          while IFS= read -r ZIP_FILE; do
-
-            echo "--------------------------------"
-            echo "Checking ZIP:"
-            echo "$ZIP_FILE"
-
-            SAFE_NAME=$(basename "$ZIP_FILE" .zip | tr -cd '[:alnum:]_-')
-
-            if [ -z "$SAFE_NAME" ]; then
-              SAFE_NAME="zip_project"
-            fi
-
-            DEST="extracted_all/$SAFE_NAME"
-
-            rm -rf "$DEST"
-            mkdir -p "$DEST"
-
-            unzip -o "$ZIP_FILE" -d "$DEST" >/dev/null 2>&1 || true
-
-            SETTINGS_FILE=$(find "$DEST" -type f -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1)
-
-            if [ -n "$SETTINGS_FILE" ]; then
-
-              FOUND="$SETTINGS_FILE"
-
-              echo "Android project found:"
-              echo "$FOUND"
-
-              break
-
-            fi
-
-          done < <(find . -maxdepth 1 -type f -iname "*.zip")
-
-          if [ -z "$FOUND" ]; then
-
-            echo "================================"
-            echo "ERROR: Android project not found"
-            echo "================================"
-
-            echo "Extracted files:"
-            find extracted_all -maxdepth 6 -type f | head -n 500
-
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Android ZIP not found"
             exit 1
-
           fi
 
-          AND
+          echo "Android ZIP found:"
+          echo "$ZIP_FILE"
+
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+          echo "ZIP extracted successfully"
+
+          find extracted -maxdepth 4 -type f | head -n 300
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          SETTINGS_FILE=""
+
+          while IFS= read -r FILE
+          do
+            case "$(basename "$FILE")" in
+              settings.gradle|settings.gradle.kts)
+                SETTINGS_FILE="$FILE"
+                break
+                ;;
+            esac
+          done < <(find extracted -type f)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "Android project not found"
+            echo "Files inside ZIP:"
+            find extracted -maxdepth 6 -type f | head -n 500
+            exit 1
+          fi
+
+          ANDROID_DIR=$(dirname "$SETTINGS_FILE")
+
+          echo "Android project found:"
+          echo "$ANDROID_DIR"
+
+          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+
+      - name: Show Android project
+        shell: bash
+        run: |
+          echo "Android directory:"
+          echo "$ANDROID_DIR"
+
+          ls -lah "$ANDROID_DIR"
+
+          find "$ANDROID_DIR" -maxdepth 4 -type f | head -n 300
+
+      - name: Build Android APK
+        shell: bash
+        run: |
+          cd "$ANDROID_DIR"
+
+          echo "Starting Android build..."
+
+          if [ -f "gradlew" ]; then
+            echo "Using Gradle Wrapper"
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon
+          else
+            echo "Using Gradle 9.6.1"
+            gradle assembleDebug --no-daemon
+          fi
+
+      - name: Find APK
+        shell: bash
+        run: |
+          APK_FILE=$(find "$ANDROID_DIR" -type f -name "*.apk" -print -quit)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "APK not found"
+            exit 1
+          fi
+
+          echo "APK found:"
+          echo "$APK_FILE"
+
+          mkdir -p output
+
+          cp "$APK_FILE" output/009-member-app.apk
+
+          ls -lh output/009-member-app.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: 009-Android-APK
+          path: output/009-member-app.apk
+          retention-days: 30
