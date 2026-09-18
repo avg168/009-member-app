@@ -1,4 +1,4 @@
-name: Build 009 Android APK
+name: Build APK and Deploy Pages
 
 on:
   workflow_dispatch:
@@ -7,17 +7,25 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -33,7 +41,9 @@ jobs:
       - name: Find Android project in ZIP files
         shell: bash
         run: |
-          echo "=== Repository ZIP files ==="
+          set -e
+
+          echo "=== ZIP files ==="
           find . -maxdepth 1 -type f -name "*.zip" -print
 
           rm -rf extracted
@@ -41,10 +51,8 @@ jobs:
 
           FOUND=""
 
-          while IFS= read -r ZIP_FILE
-          do
-            echo "--------------------------------"
-            echo "Checking ZIP: $ZIP_FILE"
+          while IFS= read -r -d '' ZIP_FILE; do
+            echo "Checking: $ZIP_FILE"
 
             TEMP_DIR="extracted/check"
             rm -rf "$TEMP_DIR"
@@ -52,25 +60,19 @@ jobs:
 
             unzip -q -o "$ZIP_FILE" -d "$TEMP_DIR"
 
-            SETTINGS_FILE=$(find "$TEMP_DIR" -type f -name "settings.gradle" -print -quit)
-
-            if [ -z "$SETTINGS_FILE" ]; then
-              SETTINGS_FILE=$(find "$TEMP_DIR" -type f -name "settings.gradle.kts" -print -quit)
-            fi
+            SETTINGS_FILE=$(find "$TEMP_DIR" -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -print -quit || true)
 
             if [ -n "$SETTINGS_FILE" ]; then
               ANDROID_DIR=$(dirname "$SETTINGS_FILE")
-
               echo "Android project found:"
               echo "$ANDROID_DIR"
 
               echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-
               FOUND="yes"
               break
             fi
 
-          done < <(find . -maxdepth 1 -type f -name "*.zip" -print)
+          done < <(find . -maxdepth 1 -type f -name "*.zip" -print0)
 
           if [ -z "$FOUND" ]; then
             echo "Android project not found."
@@ -80,7 +82,114 @@ jobs:
       - name: Build Android APK
         shell: bash
         run: |
-          echo "Android directory:"
-          echo "$ANDROID_DIR"
+          set -e
+          cd "$ANDROID_DIR"
 
-         
+          echo "Building Android APK..."
+          gradle assembleDebug --no-daemon
+
+      - name: Prepare GitHub Pages
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf site
+          mkdir -p site
+
+          echo "Copy website files..."
+
+          if [ -f index.html ]; then
+            cp index.html site/
+          fi
+
+          if [ -f manifest.webmanifest ]; then
+            cp manifest.webmanifest site/
+          fi
+
+          if [ -f sw.js ]; then
+            cp sw.js site/
+          fi
+
+          if [ -f apple-touch-icon.png ]; then
+            cp apple-touch-icon.png site/
+          fi
+
+          if [ -f icon-192.png ]; then
+            cp icon-192.png site/
+          fi
+
+          if [ -f icon-512.png ]; then
+            cp icon-512.png site/
+          fi
+
+          APK_FILE=$(find "$ANDROID_DIR" -type f -name "*.apk" -print -quit)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "APK not found."
+            exit 1
+          fi
+
+          echo "APK found:"
+          echo "$APK_FILE"
+
+          cp "$APK_FILE" site/009-member-app.apk
+
+          echo "Files ready for Pages:"
+          ls -lah site
+
+      - name: Add Android download button
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path("site/index.html")
+
+          if not p.exists():
+              raise SystemExit("index.html not found")
+
+          html = p.read_text(encoding="utf-8")
+
+          button = '''
+          <div style="max-width:600px;margin:20px auto;text-align:center;padding:0 20px;">
+            <a href="./009-member-app.apk"
+               download="009-member-app.apk"
+               style="display:block;background:#ffffff;color:#159bc5;
+                      padding:20px;border-radius:18px;
+                      font-size:24px;font-weight:bold;
+                      text-decoration:none;">
+              下載安裝 Android APP
+            </a>
+            <p style="color:white;font-size:16px;margin-top:12px;">
+              Android 手機請點上方按鈕下載 APK
+            </p>
+          </div>
+          '''
+
+          if "009-member-app.apk" not in html:
+              if "</body>" in html:
+                  html = html.replace("</body>", button + "\n</body>")
+              else:
+                  html += button
+
+          p.write_text(html, encoding="utf-8")
+          PY
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 009-Android-APK
+          path: site/009-member-app.apk
+          retention-days: 30
