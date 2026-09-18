@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -25,108 +30,57 @@ jobs:
         with:
           gradle-version: "9.6.1"
 
-      - name: Extract Android ZIP
+      - name: Find Android project in ZIP files
         shell: bash
         run: |
-          echo "Repository files:"
-          ls -lah
-
-          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*Android*iOS*V3*.zip" -print -quit)
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "Android ZIP not found"
-            exit 1
-          fi
-
-          echo "Android ZIP found:"
-          echo "$ZIP_FILE"
+          echo "=== Repository ZIP files ==="
+          find . -maxdepth 1 -type f -name "*.zip" -print
 
           rm -rf extracted
           mkdir -p extracted
 
-          unzip -o "$ZIP_FILE" -d extracted
+          FOUND=""
 
-          echo "ZIP extracted successfully"
-
-          find extracted -maxdepth 4 -type f | head -n 300
-
-      - name: Find Android project
-        shell: bash
-        run: |
-          SETTINGS_FILE=""
-
-          while IFS= read -r FILE
+          while IFS= read -r ZIP_FILE
           do
-            case "$(basename "$FILE")" in
-              settings.gradle|settings.gradle.kts)
-                SETTINGS_FILE="$FILE"
-                break
-                ;;
-            esac
-          done < <(find extracted -type f)
+            echo "--------------------------------"
+            echo "Checking ZIP: $ZIP_FILE"
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "Android project not found"
-            echo "Files inside ZIP:"
-            find extracted -maxdepth 6 -type f | head -n 500
+            TEMP_DIR="extracted/check"
+            rm -rf "$TEMP_DIR"
+            mkdir -p "$TEMP_DIR"
+
+            unzip -q -o "$ZIP_FILE" -d "$TEMP_DIR"
+
+            SETTINGS_FILE=$(find "$TEMP_DIR" -type f -name "settings.gradle" -print -quit)
+
+            if [ -z "$SETTINGS_FILE" ]; then
+              SETTINGS_FILE=$(find "$TEMP_DIR" -type f -name "settings.gradle.kts" -print -quit)
+            fi
+
+            if [ -n "$SETTINGS_FILE" ]; then
+              ANDROID_DIR=$(dirname "$SETTINGS_FILE")
+
+              echo "Android project found:"
+              echo "$ANDROID_DIR"
+
+              echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+
+              FOUND="yes"
+              break
+            fi
+
+          done < <(find . -maxdepth 1 -type f -name "*.zip" -print)
+
+          if [ -z "$FOUND" ]; then
+            echo "Android project not found."
             exit 1
           fi
 
-          ANDROID_DIR=$(dirname "$SETTINGS_FILE")
-
-          echo "Android project found:"
-          echo "$ANDROID_DIR"
-
-          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-
-      - name: Show Android project
+      - name: Build Android APK
         shell: bash
         run: |
           echo "Android directory:"
           echo "$ANDROID_DIR"
 
-          ls -lah "$ANDROID_DIR"
-
-          find "$ANDROID_DIR" -maxdepth 4 -type f | head -n 300
-
-      - name: Build Android APK
-        shell: bash
-        run: |
-          cd "$ANDROID_DIR"
-
-          echo "Starting Android build..."
-
-          if [ -f "gradlew" ]; then
-            echo "Using Gradle Wrapper"
-            chmod +x gradlew
-            ./gradlew assembleDebug --no-daemon
-          else
-            echo "Using Gradle 9.6.1"
-            gradle assembleDebug --no-daemon
-          fi
-
-      - name: Find APK
-        shell: bash
-        run: |
-          APK_FILE=$(find "$ANDROID_DIR" -type f -name "*.apk" -print -quit)
-
-          if [ -z "$APK_FILE" ]; then
-            echo "APK not found"
-            exit 1
-          fi
-
-          echo "APK found:"
-          echo "$APK_FILE"
-
-          mkdir -p output
-
-          cp "$APK_FILE" output/009-member-app.apk
-
-          ls -lh output/009-member-app.apk
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: 009-Android-APK
-          path: output/009-member-app.apk
-          retention-days: 30
+         
